@@ -1,5 +1,6 @@
 import logging
 from typing import Final, cast
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import TelegramClient
 from telethon.tl.types import Channel
@@ -55,6 +56,13 @@ async def handling_difference_update_chanel(
                 msg_text = getattr(update, "message", "") or ""
                 if not msg_text:
                     continue
+
+                is_post_exists = await session.scalar(
+                    select(Post).where(Post.message_id == update.id)
+                )
+                if is_post_exists:
+                    continue
+
                 post = Post(
                     message_id=update.id,
                     channel_username=channel_username,
