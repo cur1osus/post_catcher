@@ -47,6 +47,11 @@ async def handle_updates_for_entities(
                         client,
                         storage,
                     )
+                    new_username = await fn.Sub.fetch_id_from_chat_invite_request(
+                        client
+                    )
+                    if new_username:
+                        channel.username = new_username
 
                 if not subscribed:
                     logger.info(

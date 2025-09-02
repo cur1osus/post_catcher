@@ -15,13 +15,20 @@ from telethon.tl.functions.channels import (
     GetFullChannelRequest,
     GetParticipantRequest,
 )
-from telethon.tl.functions.messages import GetHistoryRequest, ImportChatInviteRequest
+from telethon.tl.functions.messages import (
+    CheckChatInviteRequest,
+    GetHistoryRequest,
+    ImportChatInviteRequest,
+)
 from telethon.tl.functions.updates import GetChannelDifferenceRequest
 from telethon.tl.types import (
     Channel,
     ChannelMessagesFilter,
     Chat,
     ChatForbidden,
+    ChatInvite,
+    ChatInviteAlready,
+    ChatInvitePeek,
     InputChannel,
     InputPeerChannel,
     InputPeerChat,
@@ -364,3 +371,21 @@ class Function:
             except Exception as e:
                 logger.info(f"Ошибка при подписке по ссылке: {e}")
                 return False
+
+        @staticmethod
+        async def fetch_id_from_chat_invite_request(
+            client: TelegramClient,
+        ) -> str | None:
+            result: ChatInviteAlready | ChatInvite | ChatInvitePeek = await client(  # pyright: ignore
+                CheckChatInviteRequest("ABCdefGHIjklmno")
+            )
+
+            # Варианты:
+            if isinstance(result, ChatInvite):
+                # Уже состоишь в чате
+                return None
+            elif isinstance(result, (ChatInviteAlready, ChatInvitePeek)):
+                # Приглашение активно, можно присоединиться
+                return str(result.chat.id)
+            else:
+                logger.info(result, "Ссылка не действительна")
