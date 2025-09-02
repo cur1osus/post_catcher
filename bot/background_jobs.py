@@ -45,6 +45,7 @@ async def handle_updates_for_entities(
                     subscribed = await fn.Sub.subscribe_by_invite_hash(
                         channel.username,
                         client,
+                        storage,
                     )
 
                 if not subscribed:

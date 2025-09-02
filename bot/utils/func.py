@@ -345,7 +345,9 @@ class Function:
 
         @staticmethod
         async def subscribe_by_invite_hash(
-            invite_hash: str, client: TelegramClient, storage: RedisStorage
+            invite_hash: str,
+            client: TelegramClient,
+            storage: RedisStorage,
         ) -> bool:
             is_subscribed_cached = await storage.get(invite_hash + ":subscribed")
             if is_subscribed_cached:
