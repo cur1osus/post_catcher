@@ -1,11 +1,11 @@
-import datetime
 from typing import List
-
 from sqlalchemy import (
     BigInteger,
     String,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+import datetime
+
 from sqlalchemy.orm.properties import ForeignKey
 
 from .base import Base
@@ -80,6 +80,6 @@ class Catcher(Base):
 class MonitoringChannel(Base):
     __tablename__ = "monitoring_channels"
 
-    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
-    title: Mapped[str] = mapped_column(String(100), nullable=True)
     username: Mapped[str] = mapped_column(String(100))
+    channel_id: Mapped[int] = mapped_column(BigInteger, nullable=True)
+    title: Mapped[str] = mapped_column(String(500), nullable=True)
