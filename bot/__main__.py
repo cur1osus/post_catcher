@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.ext.asyncio.session import AsyncSession
 from telethon import TelegramClient
 
-from bot.background_jobs import handling_difference_update_chanel
+from bot.background_jobs import handle_updates_for_entities
 from bot.db.base import create_db_session_pool
 from bot.db.func import RedisStorage
 from bot.scheduler import Scheduler
@@ -41,7 +41,7 @@ async def set_tasks(
     storage: RedisStorage,
 ):
     scheduler.every(10).seconds.do(
-        handling_difference_update_chanel,
+        handle_updates_for_entities,
         client,
         sessionmaker,
         storage,

@@ -1,1 +1,1 @@
-from .func import Function as fn
+from .func import Function as fn, TypeChatLike

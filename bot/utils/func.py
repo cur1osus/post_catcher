@@ -1,6 +1,8 @@
 import logging
-from typing import Any
+import re
+from typing import Any, Union
 
+import telethon
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon import TelegramClient
@@ -10,15 +12,24 @@ from telethon.errors import (
     UserAlreadyParticipantError,
 )
 from telethon.hints import Entity
-import telethon
-from telethon.tl.functions.channels import GetFullChannelRequest, GetParticipantRequest
-from telethon.tl.functions.messages import GetHistoryRequest
+from telethon.tl.functions.channels import (
+    GetFullChannelRequest,
+    GetParticipantRequest,
+    JoinChannelRequest,
+)
+from telethon.tl.functions.messages import GetHistoryRequest, ImportChatInviteRequest
 from telethon.tl.functions.updates import GetChannelDifferenceRequest
 from telethon.tl.types import (
     Channel,
     ChannelMessagesFilter,
+    Chat,
+    ChatForbidden,
     InputChannel,
+    InputPeerChannel,
+    InputPeerChat,
+    Message,
     MessageRange,
+    TypeChat,
     TypeMessage,
 )
 from telethon.tl.types.messages import ChatFull, Messages
@@ -33,20 +44,16 @@ from bot.db.models import MonitoringChannel
 
 logger = logging.getLogger(__name__)
 
+# Типы сущностей, которые мы можем отслеживать
+TypeChatLike = Union[Channel, Chat]
+
 
 class Function:
     @staticmethod
-    async def get_channels_usernames(
-        session: AsyncSession, storage: RedisStorage
-    ) -> list[str]:
-        channel_usernames: list[str] | None = await storage.get("channel_usernames")
-        if channel_usernames is None:
-            logger.info("Загрузка идентификаторов каналов...")
-            channel_usernames = list(
-                (await session.scalars(select(MonitoringChannel.username))).all()
-            )
-            await storage.set("channel_usernames", channel_usernames, ex=60)
-        return channel_usernames
+    async def get_channels(session: AsyncSession) -> list[MonitoringChannel]:
+        logger.info("Загрузка идентификаторов каналов...")
+        channels = (await session.scalars(select(MonitoringChannel))).all()
+        return list(channels)
 
     @staticmethod
     async def safe_get_entity(
@@ -81,7 +88,7 @@ class Function:
     async def get_difference_update_channel(
         client: TelegramClient,
         storage: RedisStorage,
-        channel: Channel,
+        channel: TypeChatLike,
         channel_username: str,
     ) -> list[TypeMessage]:
         """Улучшенное получение обновлений для канала с максимальным охватом сообщений."""
@@ -133,7 +140,10 @@ class Function:
                     f"Канал {channel_username}: PTS={pts} сильно устарел. Получаем историю..."
                 )
                 return await Function._handle_too_long_state(
-                    client, input_channel, storage, channel_username
+                    client,
+                    input_channel,
+                    storage,
+                    channel_username,
                 )
 
             # Сбор ВСЕХ сообщений (включая other_updates)
@@ -163,6 +173,87 @@ class Function:
         except Exception as e:
             logger.exception(
                 f"Критическая ошибка при обработке канала {channel_username}: {e}"
+            )
+            return []
+
+    @staticmethod
+    async def get_difference_update_chat(
+        client: TelegramClient,
+        storage: RedisStorage,
+        chat: TypeChat,
+        chat_username: str,
+    ) -> list[Message]:
+        """
+        Получение новых сообщений из чата/группы с использованием эмуляции разностного обновления
+        через хранение последнего известного max_id и поллинг истории.
+        Подходит для групп и чатов, где нет ChannelDifference.
+        """
+        try:
+            if not chat:
+                return []
+
+            # Поддержка Chat и ChatForbidden
+            if isinstance(chat, ChatForbidden):
+                logger.warning(
+                    f"Доступ к чату {chat_username} запрещён (ChatForbidden)"
+                )
+                return []
+
+            if not chat.id:
+                return []
+
+            input_chat = InputPeerChat(chat.id)  # Для старых чатов
+            if hasattr(chat, "megagroup") and chat.megagroup:
+                # Это супергруппа — используем InputPeerChannel
+                if not chat.access_hash:
+                    return []
+                input_chat = InputPeerChannel(chat.id, chat.access_hash)
+
+            # Получаем последний известный max_id (аналог PTS для чатов)
+            last_max_id_str = await storage.get(f"chat_last_max_id:{chat_username}")
+            last_max_id = int(last_max_id_str) if last_max_id_str else 0
+
+            # Получаем последние сообщения
+            messages = await client(
+                GetHistoryRequest(
+                    peer=input_chat,
+                    limit=50,  # Максимум за один запрос
+                    offset_date=None,
+                    offset_id=0,
+                    max_id=0,
+                    min_id=last_max_id,
+                    add_offset=0,
+                    hash=0,
+                )
+            )
+
+            new_messages = [
+                msg
+                for msg in messages.messages
+                if isinstance(msg, Message) and msg.id > last_max_id
+            ]
+
+            if new_messages:
+                # Сортируем по id, чтобы самые новые были в конце (как в каналах)
+                new_messages.sort(key=lambda m: m.id)
+
+                # Обновляем max_id
+                current_max_id = max(msg.id for msg in new_messages)
+                await storage.set(f"chat_last_max_id:{chat_username}", current_max_id)
+                logger.info(
+                    f"Чат {chat_username}: получено {len(new_messages)} новых сообщений. "
+                    f"max_id обновлён: {last_max_id} → {current_max_id}"
+                )
+            else:
+                logger.debug(
+                    f"Чат {chat_username}: новых сообщений нет (last_max_id={last_max_id})"
+                )
+
+            return new_messages
+
+        except Exception as e:
+            logger.exception(
+                f"Критическая ошибка при обработке чата {chat_username}: {e}"
             )
             return []
 
@@ -253,3 +344,54 @@ class Function:
             except Exception as e:
                 print(f"❌ Ошибка при подписке на {channel_username}: {e}")
             return False
+
+        @staticmethod
+        async def subscribe_by_link(client: TelegramClient, link: str) -> bool:
+            """
+            Подписывается на канал или чат по любой ссылке: публичной или пригласительной.
+            :param client: TelegramClient
+            :param link: Ссылка вида https://t.me/... или t.me/...
+            :return: Успешно ли присоединились
+            """
+            # Очистка ссылки
+            link = (
+                link.strip()
+                .replace("https://", "")
+                .replace("http://", "")
+                .replace("t.me/", "")
+            )
+
+            try:
+                if match := re.match(r"^(?:joinchat/|\+)([a-zA-Z0-9_-]+)$", link, re.I):
+                    # Это пригласительная ссылка
+                    invite_hash = match.group(1)
+                    result = await client(ImportChatInviteRequest(invite_hash))
+                    print(f"Присоединились по invite-ссылке: {invite_hash}")
+                    return True
+
+                else:
+                    # Это публичный юзернейм или ссылка на канал/чат
+                    username = link.split("/")[
+                        0
+                    ]  # например, "mychannel" из t.me/mychannel/post/123
+                    entity = await client.get_entity(username)
+
+                    if isinstance(entity, Channel):
+                        if entity.left:
+                            await client(JoinChannelRequest(entity))
+                        print(f"Подписаны на канал: {username}")
+                        return True
+                    elif isinstance(entity, Chat):
+                        if entity.left:
+                            await client(
+                                JoinChannelRequest(entity)
+                            )  # Работает и для Chat
+                        print(f"Присоединились к чату: {username}")
+                        return True
+                    else:
+                        print(f"Неподдерживаемый тип сущности: {type(entity)}")
+                        return False
+
+            except Exception as e:
+                print(f"Ошибка при обработке ссылки {link}: {e}")
+                return False

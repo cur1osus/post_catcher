@@ -1,73 +1,131 @@
 import logging
 from typing import Final, cast
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from telethon import TelegramClient
-from telethon.tl.types import Channel
+from telethon.tl.types import Message
 
 from bot.db.func import RedisStorage
-from bot.db.models import Post
-from bot.utils import fn
+from bot.db.models import MonitoringChannel, Post
+from bot.utils import TypeChatLike, fn
 
 logger = logging.getLogger(__name__)
 minute: Final[int] = 60
 
 
-async def handling_difference_update_chanel(
+logger = logging.getLogger(__name__)
+
+
+async def handle_updates_for_entities(
     client: TelegramClient,
     sessionmaker: async_sessionmaker[AsyncSession],
     storage: RedisStorage,
 ) -> None:
     """
-    Обрабатывает обновления из каналов и сохраняет данные в БД при необходимости.
+    Унифицированная обработка обновлений для каналов и чатов.
+    Автоматически определяет тип сущности и использует соответствующий механизм синхронизации.
     """
     async with sessionmaker() as session:
-        channels_usernames: list[str] = await fn.get_channels_usernames(
-            session, storage
-        )
-        if not channels_usernames:
+        channels: list[MonitoringChannel] = await fn.get_channels(session)
+
+        if not channels:
+            logger.info("Нет сущностей для обработки.")
             return
 
-        for channel_username in channels_usernames:
-            if not await fn.Sub.subscribe_to_channel(channel_username, client, storage):
-                logger.info(f"Ошибка подписки на канал {channel_username}")
-                continue
+        for channel in channels:
+            try:
+                subscribed = await fn.Sub.subscribe_to_channel(
+                    channel.username,
+                    client,
+                    storage,
+                )
 
-            r = await fn.safe_get_entity(client, channel_username)
-            channel_entity: Channel = cast(Channel, r)
-            if not channel_entity or not getattr(channel_entity, "broadcast", False):
-                logger.info(f"Канал {channel_username} не является каналом")
-                continue
-
-            # Получаем разницу обновлений
-            updates = await fn.get_difference_update_channel(
-                client,
-                storage,
-                channel_entity,
-                channel_username,
-            )
-
-            if not updates:
-                logger.info(f"Нет обновлений для канала {channel_username}")
-                continue
-
-            # Обрабатываем каждое обновление
-            for update in updates:
-                msg_text = getattr(update, "message", "") or ""
-                if not msg_text:
+                if not subscribed:
+                    logger.warning(
+                        f"Не удалось подписаться/присоединиться к {channel.username}"
+                    )
                     continue
 
-                is_post_exists = await session.scalar(
-                    select(Post).where(Post.message_id == update.id)
-                )
-                if is_post_exists:
+                entity = await fn.safe_get_entity(client, channel.username)
+                if not entity:
+                    logger.warning(f"Сущность не найдена: {channel.username}")
                     continue
 
-                post = Post(
-                    message_id=update.id,
-                    channel_username=channel_username,
-                    content=msg_text,
-                )
-                session.add(post)
+                # Приводим к Union-типу
+                chat_like: TypeChatLike = cast(TypeChatLike, entity)
 
+                # обновлеяем имя канала/чата если у него оно не указано еще
+                if not channel.title:
+                    channel.title = chat_like.title
+
+                # Определяем тип сущности
+                is_channel = getattr(chat_like, "broadcast", False)
+                is_megagroup = getattr(chat_like, "megagroup", False)
+
+                # Выбираем стратегию обработки
+                if is_channel and not is_megagroup:
+                    # Это обычный канал (broadcast)
+                    updates = await fn.get_difference_update_channel(
+                        client=client,
+                        storage=storage,
+                        channel=chat_like,
+                        channel_username=channel.username,
+                    )
+                else:
+                    # Это чат, супергруппа или мигрированная группа
+                    updates = await fn.get_difference_update_chat(
+                        client=client,
+                        storage=storage,
+                        chat=chat_like,
+                        chat_username=channel.username,
+                    )
+
+                if not updates:
+                    logger.debug(f"Нет новых сообщений в {channel.username}")
+                    continue
+
+                # Обработка новых сообщений
+                new_posts = []
+                for update in updates:
+                    if not isinstance(update, Message):
+                        continue
+
+                    msg_text = update.message or ""
+                    if not msg_text.strip():
+                        continue
+
+                    # Проверка на дубликат
+                    exists = await session.scalar(
+                        select(Post).where(
+                            (Post.message_id == update.id)
+                            & (Post.channel_username == channel.username)
+                        )
+                    )
+                    if exists:
+                        continue
+
+                    post = Post(
+                        message_id=update.id,
+                        channel_username=channel.username,
+                        content=msg_text,
+                    )
+                    new_posts.append(post)
+
+                if new_posts:
+                    session.add_all(new_posts)
+                    logger.info(
+                        f"Сохранено {len(new_posts)} новых сообщений из {channel.username}"
+                    )
+                else:
+                    logger.debug(
+                        f"Новых уникальных сообщений в {channel.username} нет."
+                    )
+
+            except Exception as e:
+                logger.exception(
+                    f"Ошибка при обработке сущности {channel.username}: {e}"
+                )
+                # Не останавливаем обработку других сущностей
+                continue
         await session.commit()
