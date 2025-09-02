@@ -374,18 +374,21 @@ class Function:
 
         @staticmethod
         async def fetch_id_from_chat_invite_request(
+            link: str,
             client: TelegramClient,
         ) -> str | None:
             result: ChatInviteAlready | ChatInvite | ChatInvitePeek = await client(  # pyright: ignore
-                CheckChatInviteRequest("ABCdefGHIjklmno")
+                CheckChatInviteRequest(link)
             )
 
-            # Варианты:
-            if isinstance(result, ChatInvite):
-                # Уже состоишь в чате
+            try:
+                if isinstance(result, ChatInvite):
+                    # Уже состоишь в чате
+                    return None
+                elif isinstance(result, (ChatInviteAlready, ChatInvitePeek)):
+                    # Приглашение активно, можно присоединиться
+                    return str(result.chat.id)
+                else:
+                    logger.info(result, "Ссылка не действительна")
+            except InviteHashExpiredError:
                 return None
-            elif isinstance(result, (ChatInviteAlready, ChatInvitePeek)):
-                # Приглашение активно, можно присоединиться
-                return str(result.chat.id)
-            else:
-                logger.info(result, "Ссылка не действительна")

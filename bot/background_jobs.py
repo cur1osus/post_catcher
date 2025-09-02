@@ -35,7 +35,7 @@ async def handle_updates_for_entities(
 
         for channel in channels:
             try:
-                if channel.username.startswith("@"):
+                if channel.username.startswith("@") or channel.username.startswith("-"):
                     subscribed = await fn.Sub.subscribe_to_channel(
                         channel.username,
                         client,
@@ -48,10 +48,17 @@ async def handle_updates_for_entities(
                         storage,
                     )
                     new_username = await fn.Sub.fetch_id_from_chat_invite_request(
-                        client
+                        channel.username,
+                        client,
                     )
                     if new_username:
                         channel.username = new_username
+                    else:
+                        logger.info(
+                            "Не удалось получить id канала, помечаю канал для удаления"
+                        )
+                        await session.delete(channel)
+                        continue
 
                 if not subscribed:
                     logger.info(
