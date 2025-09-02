@@ -345,11 +345,19 @@ class Function:
 
         @staticmethod
         async def subscribe_by_invite_hash(
-            invite_hash: str, client: TelegramClient
+            invite_hash: str, client: TelegramClient, storage: RedisStorage
         ) -> bool:
+            is_subscribed_cached = await storage.get(invite_hash + ":subscribed")
+            if is_subscribed_cached:
+                return True
             try:
                 result = await client(ImportChatInviteRequest(invite_hash))
                 print(f"Присоединились по invite-ссылке: {invite_hash}")
+                await storage.set(invite_hash + ":subscribed", True)
+                return True
+            except UserAlreadyParticipantError:
+                await storage.set(invite_hash + ":subscribed", True)
+                print(f"✅ Уже подписан по ссылке {invite_hash}")
                 return True
             except Exception as e:
                 logger.info(f"Ошибка при подписке по ссылке: {e}")
