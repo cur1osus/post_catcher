@@ -35,21 +35,27 @@ async def handle_updates_for_entities(
 
         for channel in channels:
             try:
-                subscribed = await fn.Sub.subscribe_to_channel(
-                    channel.username,
-                    client,
-                    storage,
-                )
+                if channel.username.startswith("@"):
+                    subscribed = await fn.Sub.subscribe_to_channel(
+                        channel.username,
+                        client,
+                        storage,
+                    )
+                else:
+                    subscribed = await fn.Sub.subscribe_by_invite_hash(
+                        channel.username,
+                        client,
+                    )
 
                 if not subscribed:
-                    logger.warning(
+                    logger.info(
                         f"Не удалось подписаться/присоединиться к {channel.username}"
                     )
                     continue
 
                 entity = await fn.safe_get_entity(client, channel.username)
                 if not entity:
-                    logger.warning(f"Сущность не найдена: {channel.username}")
+                    logger.info(f"Сущность не найдена: {channel.username}")
                     continue
 
                 # Приводим к Union-типу
@@ -82,7 +88,7 @@ async def handle_updates_for_entities(
                     )
 
                 if not updates:
-                    logger.debug(f"Нет новых сообщений в {channel.username}")
+                    logger.info(f"Нет новых сообщений в {channel.username}")
                     continue
 
                 # Обработка новых сообщений
@@ -118,14 +124,10 @@ async def handle_updates_for_entities(
                         f"Сохранено {len(new_posts)} новых сообщений из {channel.username}"
                     )
                 else:
-                    logger.debug(
-                        f"Новых уникальных сообщений в {channel.username} нет."
-                    )
+                    logger.info(f"Новых уникальных сообщений в {channel.username} нет.")
 
             except Exception as e:
-                logger.exception(
-                    f"Ошибка при обработке сущности {channel.username}: {e}"
-                )
+                logger.info(f"Ошибка при обработке сущности {channel.username}: {e}")
                 # Не останавливаем обработку других сущностей
                 continue
         await session.commit()

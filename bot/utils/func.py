@@ -1,5 +1,4 @@
 import logging
-import re
 from typing import Any, Union
 
 import telethon
@@ -15,7 +14,6 @@ from telethon.hints import Entity
 from telethon.tl.functions.channels import (
     GetFullChannelRequest,
     GetParticipantRequest,
-    JoinChannelRequest,
 )
 from telethon.tl.functions.messages import GetHistoryRequest, ImportChatInviteRequest
 from telethon.tl.functions.updates import GetChannelDifferenceRequest
@@ -346,52 +344,13 @@ class Function:
             return False
 
         @staticmethod
-        async def subscribe_by_link(client: TelegramClient, link: str) -> bool:
-            """
-            Подписывается на канал или чат по любой ссылке: публичной или пригласительной.
-            :param client: TelegramClient
-            :param link: Ссылка вида https://t.me/... или t.me/...
-            :return: Успешно ли присоединились
-            """
-            # Очистка ссылки
-            link = (
-                link.strip()
-                .replace("https://", "")
-                .replace("http://", "")
-                .replace("t.me/", "")
-            )
-
+        async def subscribe_by_invite_hash(
+            invite_hash: str, client: TelegramClient
+        ) -> bool:
             try:
-                if match := re.match(r"^(?:joinchat/|\+)([a-zA-Z0-9_-]+)$", link, re.I):
-                    # Это пригласительная ссылка
-                    invite_hash = match.group(1)
-                    result = await client(ImportChatInviteRequest(invite_hash))
-                    print(f"Присоединились по invite-ссылке: {invite_hash}")
-                    return True
-
-                else:
-                    # Это публичный юзернейм или ссылка на канал/чат
-                    username = link.split("/")[
-                        0
-                    ]  # например, "mychannel" из t.me/mychannel/post/123
-                    entity = await client.get_entity(username)
-
-                    if isinstance(entity, Channel):
-                        if entity.left:
-                            await client(JoinChannelRequest(entity))
-                        print(f"Подписаны на канал: {username}")
-                        return True
-                    elif isinstance(entity, Chat):
-                        if entity.left:
-                            await client(
-                                JoinChannelRequest(entity)
-                            )  # Работает и для Chat
-                        print(f"Присоединились к чату: {username}")
-                        return True
-                    else:
-                        print(f"Неподдерживаемый тип сущности: {type(entity)}")
-                        return False
-
+                result = await client(ImportChatInviteRequest(invite_hash))
+                print(f"Присоединились по invite-ссылке: {invite_hash}")
+                return True
             except Exception as e:
-                print(f"Ошибка при обработке ссылки {link}: {e}")
+                logger.info(f"Ошибка при подписке по ссылке: {e}")
                 return False
